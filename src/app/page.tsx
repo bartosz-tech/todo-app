@@ -1,9 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+// ----- SUPABASE — połączenie z bazą danych -----
+// Klucze bierzemy z pliku .env.local (zmienne środowiskowe)
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
 
 // ----- TYPY -----
-// Interface opisuje kształt jednego zadania (jak schemat JSON-a)
+// Interface opisuje kształt jednego zadania (jak schemat JSON-a / tabela w Supabase)
 interface Todo {
   id: number;
   text: string;
@@ -12,7 +20,6 @@ interface Todo {
 }
 
 // ----- KOMPONENT: Pojedyncze zadanie -----
-// Props: todo (dane zadania), onToggle (funkcja do oznaczania), onDelete (funkcja do usuwania)
 const TodoItem = ({
   todo,
   onToggle,
@@ -25,20 +32,17 @@ const TodoItem = ({
   return (
     <li className="flex items-center justify-between p-3 bg-white rounded-lg shadow-sm border border-gray-200">
       <div className="flex items-center gap-3">
-        {/* Checkbox — kliknięcie wywołuje onToggle z id tego zadania */}
         <input
           type="checkbox"
           checked={todo.done}
           onChange={() => onToggle(todo.id)}
           className="w-5 h-5 cursor-pointer"
         />
-        {/* Tekst zadania — przekreślony jeśli done === true */}
         <span className={todo.done ? "line-through text-gray-400" : "text-gray-800"}>
           {todo.text}
         </span>
-<span className="text-xs text-blue-500 ml-2">[{todo.priority}]</span>
+        <span className="text-xs text-blue-500 ml-2">[{todo.priority}]</span>
       </div>
-      {/* Przycisk usuwania */}
       <button
         onClick={() => onDelete(todo.id)}
         className="text-red-400 hover:text-red-600 text-sm px-2 py-1 rounded hover:bg-red-50"
@@ -50,15 +54,15 @@ const TodoItem = ({
 };
 
 // ----- KOMPONENT: Formularz dodawania -----
-const AddTodoForm = ({ onAdd }: { onAdd: (text: string) => void }) => {
+const AddTodoForm = ({ onAdd }: { onAdd: (text: string, priority: "low" | "medium" | "high") => void }) => {
   const [inputValue, setInputValue] = useState("");
+  const [priority, setPriority] = useState<"low" | "medium" | "high">("medium");
 
-  // Funkcja obsługująca wysłanie formularza
   const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault(); // Zapobiega przeładowaniu strony
-    if (inputValue.trim() === "") return; // Nie dodawaj pustych zadań
-    onAdd(inputValue); // Wywołaj funkcję z rodzica, przekazując tekst
-    setInputValue(""); // Wyczyść pole po dodaniu
+    e.preventDefault();
+    if (inputValue.trim() === "") return;
+    onAdd(inputValue, priority);
+    setInputValue("");
   };
 
   return (
@@ -70,6 +74,15 @@ const AddTodoForm = ({ onAdd }: { onAdd: (text: string) => void }) => {
         placeholder="Dodaj nowe zadanie..."
         className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-blue-500 text-gray-800"
       />
+      <select
+        value={priority}
+        onChange={(e) => setPriority(e.target.value as "low" | "medium" | "high")}
+        className="px-3 py-2 border border-gray-300 rounded-lg text-gray-800"
+      >
+        <option value="low">Low</option>
+        <option value="medium">Medium</option>
+        <option value="high">High</option>
+      </select>
       <button
         type="submit"
         className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
@@ -82,46 +95,84 @@ const AddTodoForm = ({ onAdd }: { onAdd: (text: string) => void }) => {
 
 // ----- KOMPONENT GŁÓWNY: Cała aplikacja Todo -----
 export default function Home() {
-  // Stan — tablica zadań, zaczyna z przykładowymi danymi
-  const [todos, setTodos] = useState<Todo[]>([
-    { id: 1, text: "Nauczyć się React test", done: false, priority: "high" },
-    { id: 2, text: "Zbudować Todo App test", done: false, priority: "low" },
-    { id: 3, text: "Ogarnąć Next.js test", done: false, priority: "medium" },
-  ]);
-
-  // Filtr — "all", "active", "done"
+  // Stan — tablica zadań, zaczyna PUSTA (dane przyjdą z bazy!)
+  const [todos, setTodos] = useState<Todo[]>([]);
+  const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "active" | "done">("all");
 
-  // ----- FUNKCJE (akcje na danych) -----
+  // ----- POBIERANIE DANYCH Z BAZY (jak GET request do API) -----
+  useEffect(() => {
+    const fetchTodos = async () => {
+      try {
+        const { data, error } = await supabase
+          .from("todos")           // z tabeli "todos"
+          .select("*")             // pobierz wszystkie kolumny
+          .order("created_at", { ascending: false }); // najnowsze na górze
 
-  // Dodawanie nowego zadania
-  const addTodo = (text: string) => {
-    const newTodo: Todo = {
-      id: Date.now(), // unikalny id na podstawie czasu
-      text: text,
-      done: false,
-      priority: "medium"
+        if (error) throw error;
+        if (data) setTodos(data);
+      } catch (error) {
+        console.log("Błąd pobierania:", error);
+      } finally {
+        setLoading(false);
+      }
     };
-    setTodos([...todos, newTodo]); // [...todos] = kopia obecnej tablicy + nowy element
+
+    fetchTodos();
+  }, []);
+
+  // ----- DODAWANIE (jak POST request / INSERT INTO) -----
+  const addTodo = async (text: string, priority: "low" | "medium" | "high") => {
+    try {
+      const { data, error } = await supabase
+        .from("todos")
+        .insert({ text, done: false, priority })  // wstaw nowy wiersz
+        .select()                                   // zwróć wstawiony wiersz (z id z bazy!)
+        .single();                                  // zwróć jako obiekt, nie tablicę
+
+      if (error) throw error;
+      if (data) setTodos([data, ...todos]); // dodaj na początek listy
+    } catch (error) {
+      console.log("Błąd dodawania:", error);
+    }
   };
 
-  // Przełączanie done/undone
-  const toggleTodo = (id: number) => {
-    setTodos(
-      todos.map((todo) =>
-        todo.id === id ? { ...todo, done: !todo.done } : todo
-      )
-    );
-    // Czytaj: "Przejdź po wszystkich zadaniach. Jeśli id pasuje — odwróć done. Resztę zostaw."
+  // ----- PRZEŁĄCZANIE DONE (jak PATCH request / UPDATE) -----
+  const toggleTodo = async (id: number) => {
+    // Znajdź aktualne zadanie żeby wiedzieć jaki jest obecny stan done
+    const todo = todos.find((t) => t.id === id);
+    if (!todo) return;
+
+    try {
+      const { error } = await supabase
+        .from("todos")
+        .update({ done: !todo.done })  // zmień done na przeciwny
+        .eq("id", id);                 // WHERE id = ...
+
+      if (error) throw error;
+      // Aktualizuj lokalny stan (żeby UI się odświeżył natychmiast)
+      setTodos(todos.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
+    } catch (error) {
+      console.log("Błąd aktualizacji:", error);
+    }
   };
 
-  // Usuwanie zadania
-  const deleteTodo = (id: number) => {
-    setTodos(todos.filter((todo) => todo.id !== id));
-    // Czytaj: "Zostaw tylko te zadania, których id NIE jest równe podanemu."
+  // ----- USUWANIE (jak DELETE request / DELETE FROM) -----
+  const deleteTodo = async (id: number) => {
+    try {
+      const { error } = await supabase
+        .from("todos")
+        .delete()          // usuń wiersz
+        .eq("id", id);     // WHERE id = ...
+
+      if (error) throw error;
+      setTodos(todos.filter((t) => t.id !== id));
+    } catch (error) {
+      console.log("Błąd usuwania:", error);
+    }
   };
 
-  // Filtrowanie — zwraca tablicę pasującą do wybranego filtra
+  // Filtrowanie
   const filteredTodos =
     filter === "all"
       ? todos
@@ -129,23 +180,31 @@ export default function Home() {
       ? todos.filter((todo) => !todo.done)
       : todos.filter((todo) => todo.done);
 
-  // Statystyki
   const activeTodosCount = todos.filter((todo) => !todo.done).length;
+
+  // ----- LOADING STATE -----
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-gray-100 flex items-center justify-center">
+        <p className="text-gray-500 text-lg">Ładowanie zadań z bazy...</p>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-gray-100 py-10">
       <div className="max-w-lg mx-auto">
-        {/* Nagłówek */}
-        <h1 className="text-3xl font-bold text-center text-gray-800 mb-8">
+        <h1 className="text-3xl font-bold text-center text-gray-800 mb-2">
           Lista zadań
         </h1>
+        <p className="text-center text-gray-400 text-sm mb-8">
+          Połączono z Supabase
+        </p>
 
-        {/* Formularz dodawania */}
         <div className="mb-6">
           <AddTodoForm onAdd={addTodo} />
         </div>
 
-        {/* Przyciski filtrów */}
         <div className="flex gap-2 mb-4">
           {(["all", "active", "done"] as const).map((f) => (
             <button
@@ -162,7 +221,6 @@ export default function Home() {
           ))}
         </div>
 
-        {/* Lista zadań */}
         <ul className="space-y-2">
           {filteredTodos.map((todo) => (
             <TodoItem
@@ -174,14 +232,12 @@ export default function Home() {
           ))}
         </ul>
 
-        {/* Pusta lista */}
         {filteredTodos.length === 0 && (
           <p className="text-center text-gray-400 mt-8">
             Brak zadań do wyświetlenia
           </p>
         )}
 
-        {/* Statystyki na dole */}
         <p className="text-center text-gray-500 text-sm mt-6">
           Pozostało zadań: {activeTodosCount}
         </p>
